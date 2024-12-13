@@ -73,6 +73,61 @@ struct CpuSpecs {
     clock_rate: u64,
 }
 
+fn get_gpu_info() -> Result<Vec<String>, Box<dyn Error>> {
+    if !cfg!(target_os = "linux") {
+        return Err(Box::new(PlatformError::Unsupported(
+            "This application only supports Linux".to_string()
+        )));
+    }
+
+    // First try with lspci
+    let output = Command::new("lspci")
+        .args(["-v"])
+        .output()
+        .map_err(|e| PlatformError::CommandFailed(format!("Failed to execute lspci: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(Box::new(PlatformError::CommandFailed(
+            "lspci command failed".to_string()
+        )));
+    }
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let mut gpus = Vec::new();
+
+    // Look for VGA and 3D controller entries
+    for line in output_str.lines() {
+        if line.contains("VGA") || line.contains("3D controller") {
+            if line.contains("NVIDIA") {
+                // Try nvidia-smi for more detailed info
+                if let Ok(nvidia_output) = Command::new("nvidia-smi")
+                    .args(["--query-gpu=gpu_name", "--format=csv,noheader"])
+                    .output()
+                {
+                    let nvidia_str = String::from_utf8_lossy(&nvidia_output.stdout);
+                    if nvidia_output.status.success() && !nvidia_str.trim().is_empty() {
+                        gpus.push(nvidia_str.trim().to_string());
+                        continue;
+                    }
+                }
+            }
+            
+            // Fallback to lspci output if nvidia-smi fails or for other GPUs
+            let gpu_model = line.split(':').nth(2)
+                .unwrap_or("Unknown GPU")
+                .trim()
+                .to_string();
+            gpus.push(gpu_model);
+        }
+    }
+
+    if gpus.is_empty() {
+        gpus.push("Unknown GPU".to_string());
+    }
+
+    Ok(gpus)
+}
+
 fn get_ram_type() -> Result<String, Box<dyn Error>> {
     if !cfg!(target_os = "linux") {
         return Err(Box::new(PlatformError::Unsupported(
@@ -184,6 +239,7 @@ fn get_storage_info() -> Result<(u64, String), Box<dyn Error>> {
 
     Ok((largest_device_size, storage_type))
 }
+
 fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
     let mut sys = System::new();
     sys.refresh_memory();
@@ -191,6 +247,7 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
 
     let ram_type = get_ram_type()?;
     let (storage_size, storage_type) = get_storage_info()?;
+    let gpu_models = get_gpu_info()?;
     
     // RAM - Convert from KB to bytes
     let total_memory = sys.total_memory() * 1024;
@@ -216,9 +273,7 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
                     size: storage_size, // 1TB in bytes
                     ssd_type: storage_type,
                 },
-                gpus: vec![Gpu {
-                    model: String::from("rtxA4000"),
-                }],
+                gpus: gpu_models.into_iter().map(|model| Gpu { model }).collect(),
                 cpu: CpuSpec {
                     specs: CpuSpecs {
                         cores: cpu_cores,
