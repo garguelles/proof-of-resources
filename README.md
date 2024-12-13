@@ -1,11 +1,14 @@
 # Proof of resources CLI
 
-A Rust CLI tool that provides detailed system hardware information in JSON format. The tool currently supports Linux systems and provides information about:
+A Rust CLI tool that automate config file generation via a binary
+inspection and verify configuration with a Proof of
+Resource and zk proof to enhance reliability.
 
 - RAM (size and type)
 - Storage devices (size and type - NVMe/SATA)
 - GPUs (model information)
 - CPU (cores and clock rate)
+
 
 ## Prerequisites
 
