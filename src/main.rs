@@ -1,6 +1,24 @@
 use serde::Serialize;
 use sysinfo::{System, Cpu};
 use std::error::Error;
+use std::process::Command;
+
+#[derive(Debug)]
+enum PlatformError {
+    Unsupported(String),
+    CommandFailed(String),
+}
+
+impl std::fmt::Display for PlatformError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            PlatformError::Unsupported(msg) => write!(f, "Unsupported platform: {}", msg),
+            PlatformError::CommandFailed(msg) => write!(f, "Command failed: {}", msg),
+        }
+    }
+}
+
+impl Error for PlatformError {}
 
 #[derive(Serialize)]
 struct ResourceConfig {
@@ -55,18 +73,54 @@ struct CpuSpecs {
     clock_rate: u64,
 }
 
+fn get_ram_type() -> Result<String, Box<dyn Error>> {
+    if !cfg!(target_os = "linux") {
+        return Err(Box::new(PlatformError::Unsupported(
+            "This application only supports Linux".to_string()
+        )));
+    }
+
+    let output = Command::new("sudo")
+        .args(["dmidecode", "--type", "17"])
+        .output()
+        .map_err(|e| PlatformError::CommandFailed(format!("Failed to execute dmidecode: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(Box::new(PlatformError::CommandFailed(
+            "dmidecode command failed. Make sure you have sudo privileges and dmidecode is installed".to_string()
+        )));
+    }
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    for line in output_str.lines() {
+        if line.contains("Type:") {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() > 1 {
+                let ram_type = parts[1].trim();
+                if ram_type.starts_with("DDR") {
+                    return Ok(ram_type.to_string());
+                }
+            }
+        }
+    }
+
+    Ok("Unknown".to_string())
+}
+
 fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
     let mut sys = System::new();
     sys.refresh_memory();
     sys.refresh_cpu();
 
-    // Get RAM
-    let total_memory = sys.total_memory() * 1024; // Convert from KB to bytes
+    let ram_type = get_ram_type()?;
+    
+    // RAM - Convert from KB to bytes
+    let total_memory = sys.total_memory() * 1024;
 
-    // Get CPU info
+    // CPU info - Convert MHz to Hz
     let cpu_cores = sys.cpus().len() as u32;
     let cpu_frequency = sys.cpus().first()
-        .map(|cpu| cpu.frequency() as u64 * 1_000_000) // Convert MHz to Hz
+        .map(|cpu| cpu.frequency() as u64 * 1_000_000)
         .unwrap_or(0);
 
     let config = ResourceConfig {
@@ -78,7 +132,7 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
             resource: Resource {
                 ram: Ram {
                     size: total_memory,
-                    ram_type: String::from("DDR4"),
+                    ram_type,
                 },
                 ssd: Ssd {
                     size: 1099511627776, // 1TB in bytes
@@ -103,7 +157,6 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let system_info = get_system_info()?;
     
-    // Pretty print the JSON
     let json = serde_json::to_string_pretty(&system_info)?;
     println!("{}", json);
     
