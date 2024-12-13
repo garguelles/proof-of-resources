@@ -1,7 +1,7 @@
 use serde::Serialize;
-use sysinfo::{System, Cpu};
 use std::error::Error;
 use std::process::Command;
+use sysinfo::{Cpu, System};
 
 #[derive(Debug)]
 enum PlatformError {
@@ -73,12 +73,18 @@ struct CpuSpecs {
     clock_rate: u64,
 }
 
-fn get_gpu_info() -> Result<Vec<String>, Box<dyn Error>> {
+fn check_platform() -> Result<(), Box<dyn Error>> {
     if !cfg!(target_os = "linux") {
         return Err(Box::new(PlatformError::Unsupported(
-            "This application only supports Linux".to_string()
+            "This application only supports Linux".to_string(),
         )));
     }
+
+    return Ok(());
+}
+
+fn get_gpu_info() -> Result<Vec<String>, Box<dyn Error>> {
+    check_platform()?;
 
     // First try with lspci
     let output = Command::new("lspci")
@@ -88,7 +94,7 @@ fn get_gpu_info() -> Result<Vec<String>, Box<dyn Error>> {
 
     if !output.status.success() {
         return Err(Box::new(PlatformError::CommandFailed(
-            "lspci command failed".to_string()
+            "lspci command failed".to_string(),
         )));
     }
 
@@ -111,9 +117,11 @@ fn get_gpu_info() -> Result<Vec<String>, Box<dyn Error>> {
                     }
                 }
             }
-            
+
             // Fallback to lspci output if nvidia-smi fails or for other GPUs
-            let gpu_model = line.split(':').nth(2)
+            let gpu_model = line
+                .split(':')
+                .nth(2)
                 .unwrap_or("Unknown GPU")
                 .trim()
                 .to_string();
@@ -129,11 +137,7 @@ fn get_gpu_info() -> Result<Vec<String>, Box<dyn Error>> {
 }
 
 fn get_ram_type() -> Result<String, Box<dyn Error>> {
-    if !cfg!(target_os = "linux") {
-        return Err(Box::new(PlatformError::Unsupported(
-            "This application only supports Linux".to_string()
-        )));
-    }
+    check_platform()?;
 
     let output = Command::new("sudo")
         .args(["dmidecode", "--type", "17"])
@@ -163,44 +167,39 @@ fn get_ram_type() -> Result<String, Box<dyn Error>> {
 }
 
 fn get_storage_info() -> Result<(u64, String), Box<dyn Error>> {
-    if !cfg!(target_os = "linux") {
-        return Err(Box::new(PlatformError::Unsupported(
-            "This application only supports Linux".to_string()
-        )));
-    }
+    check_platform()?;
 
     // Use lsblk with size information
     let output = Command::new("lsblk")
-        .args(["-d", "-o", "NAME,TYPE,SIZE,TRAN", "--bytes"])  // --bytes for exact size
+        .args(["-d", "-o", "NAME,TYPE,SIZE,TRAN", "--bytes"]) // --bytes for exact size
         .output()
         .map_err(|e| PlatformError::CommandFailed(format!("Failed to execute lsblk: {}", e)))?;
 
     if !output.status.success() {
         return Err(Box::new(PlatformError::CommandFailed(
-            "lsblk command failed".to_string()
+            "lsblk command failed".to_string(),
         )));
     }
 
     let output_str = String::from_utf8_lossy(&output.stdout);
     let mut largest_device_size = 0u64;
     let mut storage_type = String::from("Unknown");
-    
+
     // Try to find NVMe devices first
-    for line in output_str.lines().skip(1) {  // skip header line
+    for line in output_str.lines().skip(1) {
+        // skip header line
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 3 {
             let device_name = parts[0];
             let size_str = parts[2];
             let size = size_str.parse::<u64>().unwrap_or(0);
-            
+
             if size > largest_device_size {
                 largest_device_size = size;
-                
+
                 if device_name.starts_with("nvme") {
                     // Try to get NVMe generation
-                    let nvme_info = Command::new("sudo")
-                        .args(["nvme", "list"])
-                        .output();
+                    let nvme_info = Command::new("sudo").args(["nvme", "list"]).output();
 
                     if let Ok(nvme_output) = nvme_info {
                         let nvme_str = String::from_utf8_lossy(&nvme_output.stdout);
@@ -233,7 +232,7 @@ fn get_storage_info() -> Result<(u64, String), Box<dyn Error>> {
 
     if largest_device_size == 0 {
         return Err(Box::new(PlatformError::CommandFailed(
-            "Could not determine storage size".to_string()
+            "Could not determine storage size".to_string(),
         )));
     }
 
@@ -248,13 +247,15 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
     let ram_type = get_ram_type()?;
     let (storage_size, storage_type) = get_storage_info()?;
     let gpu_models = get_gpu_info()?;
-    
+
     // RAM - Convert from KB to bytes
     let total_memory = sys.total_memory() * 1024;
 
     // CPU info - Convert MHz to Hz
     let cpu_cores = sys.cpus().len() as u32;
-    let cpu_frequency = sys.cpus().first()
+    let cpu_frequency = sys
+        .cpus()
+        .first()
         .map(|cpu| cpu.frequency() as u64 * 1_000_000)
         .unwrap_or(0);
 
@@ -289,9 +290,9 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let system_info = get_system_info()?;
-    
+
     let json = serde_json::to_string_pretty(&system_info)?;
     println!("{}", json);
-    
+
     Ok(())
 }
