@@ -107,12 +107,90 @@ fn get_ram_type() -> Result<String, Box<dyn Error>> {
     Ok("Unknown".to_string())
 }
 
+fn get_storage_info() -> Result<(u64, String), Box<dyn Error>> {
+    if !cfg!(target_os = "linux") {
+        return Err(Box::new(PlatformError::Unsupported(
+            "This application only supports Linux".to_string()
+        )));
+    }
+
+    // Use lsblk with size information
+    let output = Command::new("lsblk")
+        .args(["-d", "-o", "NAME,TYPE,SIZE,TRAN", "--bytes"])  // --bytes for exact size
+        .output()
+        .map_err(|e| PlatformError::CommandFailed(format!("Failed to execute lsblk: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(Box::new(PlatformError::CommandFailed(
+            "lsblk command failed".to_string()
+        )));
+    }
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let mut largest_device_size = 0u64;
+    let mut storage_type = String::from("Unknown");
+    
+    // Try to find NVMe devices first
+    for line in output_str.lines().skip(1) {  // skip header line
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let device_name = parts[0];
+            let size_str = parts[2];
+            let size = size_str.parse::<u64>().unwrap_or(0);
+            
+            if size > largest_device_size {
+                largest_device_size = size;
+                
+                if device_name.starts_with("nvme") {
+                    // Try to get NVMe generation
+                    let nvme_info = Command::new("sudo")
+                        .args(["nvme", "list"])
+                        .output();
+
+                    if let Ok(nvme_output) = nvme_info {
+                        let nvme_str = String::from_utf8_lossy(&nvme_output.stdout);
+                        if nvme_str.contains("PCIe 4.0") {
+                            storage_type = "NVMeGen4".to_string();
+                        } else if nvme_str.contains("PCIe 3.0") {
+                            storage_type = "NVMeGen3".to_string();
+                        } else {
+                            storage_type = "NVMe".to_string();
+                        }
+                    }
+                } else if parts.get(3).map_or(false, |&t| t == "sata") {
+                    // Check if it's an SSD for SATA devices
+                    let smart_info = Command::new("sudo")
+                        .args(["smartctl", "-i", &format!("/dev/{}", device_name)])
+                        .output();
+
+                    if let Ok(smart_output) = smart_info {
+                        let smart_str = String::from_utf8_lossy(&smart_output.stdout);
+                        if smart_str.contains("Solid State Device") {
+                            storage_type = "SATA SSD".to_string();
+                        } else {
+                            storage_type = "SATA HDD".to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if largest_device_size == 0 {
+        return Err(Box::new(PlatformError::CommandFailed(
+            "Could not determine storage size".to_string()
+        )));
+    }
+
+    Ok((largest_device_size, storage_type))
+}
 fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
     let mut sys = System::new();
     sys.refresh_memory();
     sys.refresh_cpu();
 
     let ram_type = get_ram_type()?;
+    let (storage_size, storage_type) = get_storage_info()?;
     
     // RAM - Convert from KB to bytes
     let total_memory = sys.total_memory() * 1024;
@@ -135,8 +213,8 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
                     ram_type,
                 },
                 ssd: Ssd {
-                    size: 1099511627776, // 1TB in bytes
-                    ssd_type: String::from("NVMeGen4"),
+                    size: storage_size, // 1TB in bytes
+                    ssd_type: storage_type,
                 },
                 gpus: vec![Gpu {
                     model: String::from("rtxA4000"),
