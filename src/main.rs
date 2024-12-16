@@ -248,9 +248,6 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
     let (storage_size, storage_type) = get_storage_info()?;
     let gpu_models = get_gpu_info()?;
 
-    // RAM - Convert from KB to bytes
-    let total_memory = sys.total_memory() * 1024;
-
     // CPU info - Convert MHz to Hz
     let cpu_cores = sys.cpus().len() as u32;
     let cpu_frequency = sys
@@ -267,7 +264,7 @@ fn get_system_info() -> Result<ResourceConfig, Box<dyn Error>> {
         config: Config {
             resource: Resource {
                 ram: Ram {
-                    size: total_memory,
+                    size: sys.total_memory(),
                     ram_type,
                 },
                 ssd: Ssd {
