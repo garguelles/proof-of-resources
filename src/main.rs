@@ -1,7 +1,11 @@
 use serde::Serialize;
 use std::error::Error;
 use std::process::Command;
-use sysinfo::{Cpu, System};
+use sysinfo::{System};
+use std::fs::File;
+use std::io::Write;
+use std::fs;
+
 
 #[derive(Debug)]
 enum PlatformError {
@@ -290,6 +294,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let json = serde_json::to_string_pretty(&system_info)?;
     println!("{}", json);
+
+    // Create out directory if it doesn't exist
+    fs::create_dir_all("out")?;
+
+    // Write to file in the out directory
+    let file_path = "out/system_info.json";
+    let mut file = File::create(file_path)?;
+    file.write_all(json.as_bytes())?;
+    println!("System information has been saved to {}", file_path);
 
     Ok(())
 }
