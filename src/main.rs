@@ -90,54 +90,28 @@ fn check_platform() -> Result<(), Box<dyn Error>> {
 fn get_gpu_info() -> Result<Vec<String>, Box<dyn Error>> {
     check_platform()?;
 
-    // First try with lspci
-    let output = Command::new("lspci")
-        .args(["-v"])
+    let nvidia_output = Command::new("nvidia-smi")
+        .args(["--query-gpu=gpu_name", "--format=csv,noheader"])
         .output()
-        .map_err(|e| PlatformError::CommandFailed(format!("Failed to execute lspci: {}", e)))?;
+        .map_err(|e| PlatformError::CommandFailed(format!("Failed to execute nvidia-smi: {}", e)))?;
 
-    if !output.status.success() {
-        return Err(Box::new(PlatformError::CommandFailed(
-            "lspci command failed".to_string(),
-        )));
+    if !nvidia_output.status.success() {
+        return Ok(vec!["Unknown GPU".to_string()]);
     }
 
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    let mut gpus = Vec::new();
-
-    // Look for VGA and 3D controller entries
-    for line in output_str.lines() {
-        if line.contains("VGA") || line.contains("3D controller") {
-            if line.contains("NVIDIA") {
-                // Try nvidia-smi for more detailed info
-                if let Ok(nvidia_output) = Command::new("nvidia-smi")
-                    .args(["--query-gpu=gpu_name", "--format=csv,noheader"])
-                    .output()
-                {
-                    let nvidia_str = String::from_utf8_lossy(&nvidia_output.stdout);
-                    if nvidia_output.status.success() && !nvidia_str.trim().is_empty() {
-                        gpus.push(nvidia_str.trim().to_string());
-                        continue;
-                    }
-                }
-            }
-
-            // Fallback to lspci output if nvidia-smi fails or for other GPUs
-            let gpu_model = line
-                .split(':')
-                .nth(2)
-                .unwrap_or("Unknown GPU")
-                .trim()
-                .to_string();
-            gpus.push(gpu_model);
-        }
-    }
+    let nvidia_str = String::from_utf8_lossy(&nvidia_output.stdout);
+    let gpus: Vec<String> = nvidia_str
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+        .collect();
 
     if gpus.is_empty() {
-        gpus.push("Unknown GPU".to_string());
+        Ok(vec!["Unknown GPU".to_string()])
+    } else {
+        Ok(gpus)
     }
 
-    Ok(gpus)
 }
 
 fn get_ram_type() -> Result<String, Box<dyn Error>> {
